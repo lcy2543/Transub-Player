@@ -1641,6 +1641,8 @@ internal sealed class PreviewController : IDisposable
                     _subs.PersistTranslatedSidecars();
                     _subs.PersistTranslationCache(mediaPath);
                     PreviewPaths.MarkAsrDone(mediaPath);
+                    if (WantsPreviewMt && !_subs.UsingExistingSub)
+                        PreviewPaths.CopyTranslatedSrtToMediaFolder(mediaPath, _settings.TranslateTarget, m => _log(m));
                     _previewRetryAvailable = false;
                     PublishStatus(BuildStatusLine() + Loc.Get("Main.Status.AsrDone"));
                     MaybeOfferQualityHandoffTip();

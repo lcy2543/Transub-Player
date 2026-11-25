@@ -136,6 +136,9 @@ internal sealed class PreviewSubtitleSync : IDisposable
 
     public void SetUsingExistingSub(bool value) => _usingExistingSub = value;
 
+    /// <summary>True while an external (embedded/sidecar) subtitle is shown instead of the preview pipeline.</summary>
+    public bool UsingExistingSub => _usingExistingSub;
+
     public void SetOutputPaths(string source, string zh, string dual, string display)
     {
         _sourceSrt = source;

@@ -378,6 +378,7 @@ internal sealed class PlaylistPrefetch
         SubtitleFile.WriteDisplaySrt(PreviewPaths.DualSrt(mediaPath), cues, SubtitleDisplayMode.Dual);
         SubtitleFile.WriteDisplaySrt(PreviewPaths.DisplaySrt(mediaPath), cues, SubtitleDisplayMode.Zh);
         SaveTranslationCache(mediaPath, _settings.TranslateTarget, cues);
+        PreviewPaths.CopyTranslatedSrtToMediaFolder(mediaPath, _settings.TranslateTarget, _log);
     }
 
     public static void SaveTranslationCache(string mediaPath, string? translateTarget, IReadOnlyList<Cue> cues)

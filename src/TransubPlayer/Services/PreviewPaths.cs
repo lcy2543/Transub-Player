@@ -89,6 +89,35 @@ internal static class PreviewPaths
         TryDelete(DisplaySrt(mediaPath));
     }
 
+    /// <summary>
+    /// After translation finished, copy the translated preview SRT next to the video file.
+    /// Local media only; keeps the preview file name; overwrites a previous copy.
+    /// </summary>
+    public static void CopyTranslatedSrtToMediaFolder(
+        string mediaPath,
+        string? translateTarget,
+        Action<string>? log = null)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(mediaPath) || !File.Exists(mediaPath))
+                return;
+            var src = TranslatedPreviewSrt(mediaPath, translateTarget);
+            if (!File.Exists(src) || new FileInfo(src).Length <= 32)
+                return;
+            var dir = Path.GetDirectoryName(mediaPath);
+            if (string.IsNullOrWhiteSpace(dir))
+                return;
+            var dst = Path.Combine(dir, Path.GetFileName(src));
+            File.Copy(src, dst, overwrite: true);
+            log?.Invoke("翻译完成 · 已复制到影片文件夹 · " + dst);
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke("复制字幕到影片文件夹失败 · " + ex.Message);
+        }
+    }
+
     private static void TryDelete(string path)
     {
         try
