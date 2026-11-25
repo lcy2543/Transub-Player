@@ -695,7 +695,10 @@ internal sealed class AsrPipeline : IDisposable
             UseGpu = preferGpu,
             GpuDevice = gpuDevice,
         };
-        _factory = WhisperFactory.FromPath(modelPath, options);
+        // whisper.cpp crashes (SEH) when the model path contains non-ASCII characters
+        // (CJK usernames / folders) — load via an ASCII-safe alias that points at the same file.
+        var nativeModelPath = NativePathSafety.SafeExistingFile(modelPath, _log);
+        _factory = WhisperFactory.FromPath(nativeModelPath, options);
         _loadedModelPath = modelPath;
         _factoryGpu = preferGpu;
 
