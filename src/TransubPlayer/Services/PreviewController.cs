@@ -6,6 +6,13 @@ namespace TransubPlayer.Services;
 
 internal sealed class PreviewController : IDisposable
 {
+    /// <summary>
+    /// Wait after stopping llama before Whisper may create its Vulkan instance — the driver
+    /// reclaims the killed process's GPU memory asynchronously, and a reload inside that
+    /// window corrupted the native heap (crash on rapid media switch).
+    /// </summary>
+    internal static readonly TimeSpan GpuHandoffSettleDelay = TimeSpan.FromMilliseconds(700);
+
     private readonly AppSettings _settings;
     private readonly Action<string> _status;
     private readonly Action<string> _log;
@@ -397,6 +404,7 @@ internal sealed class PreviewController : IDisposable
             log,
             path => SceneProfiles.Resolve(settings.SourceLanguage, path, out _),
             ct => EnsureTranslateAsync(ct, preferCpu: true),
+            DemoteTranslateGpuForAsrAsync,
             () => _settings.TranslateEnabled,
             () => MediaPath);
         _prefetch.Changed += state => PrefetchChanged?.Invoke(state);
@@ -4165,18 +4173,21 @@ internal sealed class PreviewController : IDisposable
         if (_disposed != 0 || _llama is null) return;
         // OpenMedia clears _translateReady without Stop — demote by process state, not readiness flag.
         if (_translateRunningOnCpu) return;
-        if (_llama.Spawned != true && _translateReady != true) return;
+        if (_llama.Spawned != true && _translateReady != true && !_llama.HasLiveProcess) return;
 
         await _translateGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             if (_disposed != 0 || _llama is null) return;
             if (_translateRunningOnCpu) return;
-            if (_llama.Spawned != true && _translateReady != true) return;
+            if (_llama.Spawned != true && _translateReady != true && !_llama.HasLiveProcess) return;
             _log("识别占用 GPU · 停止翻译模型 GPU 实例");
             try { _llama.Stop(); } catch { /* ignore */ }
             _translateReady = null;
             _translateRunningOnCpu = false;
+            // The driver reclaims the killed server's Vulkan memory asynchronously —
+            // starting Whisper's Vulkan instance inside that window corrupts the native heap.
+            await Task.Delay(GpuHandoffSettleDelay, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -4247,9 +4258,11 @@ internal sealed class PreviewController : IDisposable
 
             try
             {
-                // Keep Whisper VRAM while a job is active/winding down, or when prefetch
-                // asks for CPU-only MT so Vulkan ASR is not contested by llama ngl=99.
-                var asrHoldsGpu = _engine.HasActiveJob || preferCpu;
+                // Keep Whisper VRAM while a job is active/winding down. Prefetch asks for CPU
+                // MT only while the Whisper factory is not yet loaded — a loaded, idle factory
+                // can safely share the GPU with llama, and CPU MT pegs every core
+                // (llama.cpp defaults n_threads to all logical cores).
+                var asrHoldsGpu = _engine.HasActiveJob || (preferCpu && !_engine.IsFactoryLoaded);
                 if (forceGpuRestart && _translateRunningOnCpu && !asrHoldsGpu)
                 {
                     _llama?.Stop();
@@ -4271,6 +4284,14 @@ internal sealed class PreviewController : IDisposable
                     else if (preferCpu && !_translateRunningOnCpu && _llama?.Spawned == true)
                     {
                         _llama.Stop();
+                        _translateReady = null;
+                    }
+                    else if (_translateRunningOnCpu && !asrHoldsGpu)
+                    {
+                        // Healthy llama but CPU-mode while Whisper no longer holds the GPU —
+                        // upgrade to GPU instead of pegging every CPU core on translation.
+                        _log("翻译模型 CPU 模式 · 升级到 GPU");
+                        _llama?.Stop();
                         _translateReady = null;
                     }
                     else

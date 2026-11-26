@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace TransubPlayer.Services;
@@ -28,6 +29,18 @@ internal sealed class LlamaServerProcess : IDisposable
     public bool Spawned { get; private set; }
     public string? ModelPath { get; private set; }
     public string? ExePath { get; private set; }
+
+    /// <summary>True while a tracked process (spawned or adopted external) is still alive.</summary>
+    public bool HasLiveProcess
+    {
+        get
+        {
+            var p = _process;
+            if (p is null) return false;
+            try { return !p.HasExited; }
+            catch (InvalidOperationException) { return false; }
+        }
+    }
 
     public static async Task<bool> IsHealthyAsync(string baseUrl, CancellationToken ct)
         => await LooksLikeLlamaModelsAsync(baseUrl, ct).ConfigureAwait(false);
@@ -96,6 +109,96 @@ internal sealed class LlamaServerProcess : IDisposable
         }
     }
 
+    /// <summary>
+    /// Track a llama-server we did not spawn (leftover from a previous player session).
+    /// Without adoption, <see cref="Stop"/> is a no-op for it and the GPU instance survives
+    /// demote — Vulkan ASR then reloads/infers while llama still owns the device, which
+    /// corrupts the native heap and crashes the player on rapid media switches.
+    /// </summary>
+    private void TryAdoptPortOwner(string url, Action<string>? log)
+    {
+        try
+        {
+            var existing = _process;
+            if (existing is not null)
+            {
+                var alive = false;
+                try { alive = !existing.HasExited; }
+                catch (InvalidOperationException) { /* no handle */ }
+                if (alive) return;
+                try { existing.Dispose(); } catch { /* ignore */ }
+                _process = null;
+            }
+
+            var port = new Uri(url).Port;
+            var pid = FindTcpListenerPid(port);
+            if (pid == 0) return;
+
+            using var probe = Process.GetProcessById(pid);
+            var name = probe.ProcessName;
+            if (string.IsNullOrWhiteSpace(name)
+                || !name.Contains("llama", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            _process = Process.GetProcessById(pid);
+            log?.Invoke($"接管外部 llama-server 实例 · pid={pid}");
+        }
+        catch
+        {
+            // Adoption is best-effort — external server keeps running untracked.
+        }
+    }
+
+    /// <summary>PID of the process with a LISTEN socket on <paramref name="port"/>, or 0.</summary>
+    private static int FindTcpListenerPid(int port)
+    {
+        const int afInet = 2;
+        const int tcpTableOwnerPidListener = 3;
+        try
+        {
+            var size = 0;
+            _ = GetExtendedTcpTable(IntPtr.Zero, ref size, false, afInet, tcpTableOwnerPidListener, 0);
+            if (size <= 0) return 0;
+            var buf = Marshal.AllocHGlobal(size);
+            try
+            {
+                if (GetExtendedTcpTable(buf, ref size, false, afInet, tcpTableOwnerPidListener, 0) != 0)
+                    return 0;
+                var entries = Marshal.ReadInt32(buf);
+                var rowSize = 24; // DWORD state + 2×(DWORD addr+port) + DWORD pid
+                for (var i = 0; i < entries; i++)
+                {
+                    var row = buf + 4 + i * rowSize;
+                    var localPortRaw = Marshal.ReadInt32(row, 8);
+                    var localPort = (localPortRaw & 0xFF) << 8 | ((localPortRaw >> 8) & 0xFF);
+                    if (localPort != port)
+                        continue;
+                    var pid = Marshal.ReadInt32(row, 20);
+                    if (pid > 0)
+                        return pid;
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buf);
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+        return 0;
+    }
+
+    [DllImport("iphlpapi.dll", SetLastError = true)]
+    private static extern uint GetExtendedTcpTable(
+        IntPtr pTcpTable,
+        ref int dwSize,
+        bool bOrder,
+        int ulAf,
+        int tableClass,
+        int reserved);
+
     public async Task EnsureRunningAsync(
         AppSettings settings,
         Action<string>? log,
@@ -144,6 +247,7 @@ internal sealed class LlamaServerProcess : IDisposable
             else if (!mismatch && !unknownFamily)
             {
                 Spawned = Spawned && _process is { HasExited: false };
+                TryAdoptPortOwner(url, log);
                 log?.Invoke($"已连接翻译服务 · {url} · {Path.GetFileName(ModelPath)}");
                 return;
             }
@@ -159,6 +263,7 @@ internal sealed class LlamaServerProcess : IDisposable
                     if (mismatch)
                         log?.Invoke("已有翻译服务与当前预设模型不完全匹配，仍先使用现有服务（无法替换外部进程）");
                     Spawned = Spawned && _process is { HasExited: false };
+                    TryAdoptPortOwner(url, log);
                     log?.Invoke($"已连接翻译服务 · {url}" + (ModelPath is null ? "" : " · " + Path.GetFileName(ModelPath)));
                     return;
                 }
@@ -167,6 +272,9 @@ internal sealed class LlamaServerProcess : IDisposable
                     ? "端口上已有翻译服务但模型未知，改用本机 GGUF 启动"
                     : "端口上已有翻译服务与当前预设不符，改用本机 GGUF 启动");
                 forceNewPort = true;
+                // Track the old llama so the spawn loop's Stop() kills it — otherwise a
+                // leftover CPU-mode instance survives the restart and pegs every core.
+                TryAdoptPortOwner(url, log);
             }
         }
 
@@ -254,6 +362,9 @@ internal sealed class LlamaServerProcess : IDisposable
         Spawned = false;
     }
 
+    /// <summary>Thread cap for llama-server so CPU-mode MT never saturates the machine.</summary>
+    internal static int CpuThreadCap => Math.Clamp(Environment.ProcessorCount / 4, 2, 6);
+
     private void StartOnce(string exe, string model, int port, int ngl, Action<string>? log)
     {
         if (string.IsNullOrWhiteSpace(exe) || string.IsNullOrWhiteSpace(model))
@@ -277,6 +388,9 @@ internal sealed class LlamaServerProcess : IDisposable
             "-c", "4096",
             "-ngl", ngl.ToString(),
             "-a", "hymt",
+            // llama.cpp defaults n_threads to every logical core — CPU-mode translation
+            // (ngl=0 while ASR holds the GPU) would otherwise peg all cores for minutes.
+            "-t", CpuThreadCap.ToString(),
         })
         {
             start.ArgumentList.Add(a);

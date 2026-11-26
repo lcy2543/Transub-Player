@@ -2,6 +2,39 @@
 
 [English](CHANGELOG.md) | [简体中文](CHANGELOG.zh-CN.md) | [日本語](CHANGELOG.ja.md) | [한국어](CHANGELOG.ko.md)
 
+## [1.8.6] — 2026-11-26
+
+### Improved
+
+- **Remember manually-set window size:** after resizing the window by hand, opening a new file no longer snaps the window to the video resolution — video plays inside the user's size with aspect preserved (persists across restarts). Re-selecting the video-scaling option in Settings re-enables fit-window-to-video; fullscreen/maximize transitions never set the flag by mistake.
+
+---
+
+## [1.8.5] — 2026-11-26
+
+### Improved
+
+- **CPU no longer saturated by translation:** while an ASR job holds the GPU, translation runs in CPU mode by design — but llama.cpp defaults n_threads to every logical core, pinning the CPU at 100%. llama-server now caps inference threads (cores ÷ 4, clamped 2–6); translation keeps running in the background and returns to the GPU once recognition ends.
+- **Leftover translation process cleanup:** on player restart the previous session's llama-server is adopted and stopped instead of surviving as a CPU-saturating zombie.
+
+---
+
+## [1.8.4] — 2026-11-26
+
+### Improved
+
+- **Translation back on GPU:** 1.8.3 made GPU handoff real, which pushed playlist translation to CPU mode (ngl=0) pegging every core. Translation now uses the GPU whenever the recognition model is loaded and stable (no reload window), and upgrades a CPU-mode llama to GPU automatically instead of saturating the CPU.
+
+---
+
+## [1.8.3] — 2026-11-25
+
+### Fixed
+
+- **Crash when switching videos rapidly:** Whisper (Vulkan) could reload or infer while a llama-server GPU instance — including a leftover one from an earlier session that "Stop" never killed — still owned the device, corrupting the native heap. The player now adopts external llama-server processes (by listening-port owner PID) so GPU demote actually stops them, waits for the driver to reclaim GPU memory after the handoff, cools down before reloading the recognition model, and demotes llama before playlist prefetch recognition.
+
+---
+
 ## [1.8.0] — 2026-11-18
 
 ### Added

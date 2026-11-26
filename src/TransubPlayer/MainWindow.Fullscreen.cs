@@ -480,13 +480,23 @@ public partial class MainWindow
         WindowChromeUtil.ApplyChromeMetrics(this, captionHeight: 52, canResize: true);
         RootBorder.Margin = _preFsMargin;
         RootBorder.BorderThickness = _preFsBorder;
-        WindowState = WindowState.Normal;
-        Left = _preFsLeft;
-        Top = _preFsTop;
-        Width = _preFsWidth;
-        Height = _preFsHeight;
-        if (_preFsState == WindowState.Maximized)
-            WindowState = WindowState.Maximized;
+        // 恢复全屏前的窗口边界不是用户调整 — 不标记 WindowUserSized
+        _suppressUserResizeMark = true;
+        try
+        {
+            WindowState = WindowState.Normal;
+            Left = _preFsLeft;
+            Top = _preFsTop;
+            Width = _preFsWidth;
+            Height = _preFsHeight;
+            if (_preFsState == WindowState.Maximized)
+                WindowState = WindowState.Maximized;
+        }
+        finally
+        {
+            // 布局完成、SizeChanged 触发之后再解除抑制
+            Dispatcher.BeginInvoke(() => _suppressUserResizeMark = false, DispatcherPriority.Loaded);
+        }
         ShowPlaylist(_preFsPlaylistOpen);
         UpdateFullscreenButton();
         ApplyNativeCursor(true);

@@ -82,6 +82,11 @@ public sealed class AppSettings
 
     // —— 常规（PotPlayer 风格）——
     public bool RememberWindowBounds { get; set; } = true;
+    /// <summary>
+    /// 用户手动调整过窗口尺寸后为 true——停止「窗口适应视频」自动改窗口，
+    /// 打开新文件保持用户设置的尺寸；在设置里重选「画面缩放」可恢复自动适应。
+    /// </summary>
+    public bool WindowUserSized { get; set; }
     /// <summary>null = never saved; avoids NaN which System.Text.Json cannot write by default.</summary>
     public double? WindowLeft { get; set; }
     public double? WindowTop { get; set; }
@@ -369,6 +374,7 @@ public sealed class AppSettings
         AlwaysOnTop = copy.AlwaysOnTop;
         LockWindowAspectRatio = copy.LockWindowAspectRatio;
         RememberWindowBounds = copy.RememberWindowBounds;
+        WindowUserSized = copy.WindowUserSized;
         WindowLeft = copy.WindowLeft;
         WindowTop = copy.WindowTop;
         WindowWidth = copy.WindowWidth;

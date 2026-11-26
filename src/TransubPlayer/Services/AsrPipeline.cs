@@ -30,9 +30,19 @@ internal sealed class AsrPipeline : IDisposable
     private Task? _runTask;
     private string? _jobId;
     private string _modelsRoot = "";
+    private DateTime _lastNativeReleaseUtc = DateTime.MinValue;
+
+    /// <summary>
+    /// Minimum gap between a native Whisper teardown and the next <c>WhisperFactory.FromPath</c>.
+    /// Reloads issued inside the Vulkan driver's async-reclaim window corrupt the native heap
+    /// (crash on rapid media switch).
+    /// </summary>
+    internal static readonly TimeSpan NativeReloadCooldown = TimeSpan.FromMilliseconds(1200);
 
     public string EngineLabel => Loc.Get("Settings.Engine.Embedded");
     public string ModelsRoot => _modelsRoot;
+    /// <summary>True while the native Whisper factory is loaded and stable — llama may share the GPU with it; only factory (re)load/dispose windows are unsafe.</summary>
+    public bool IsFactoryLoaded => _factory is not null && _loadedModelPath is not null;
     public EngineCapabilities? Capabilities { get; private set; }
     public string? JobId => _jobId;
     public bool IsConnected { get; private set; }
@@ -395,12 +405,15 @@ internal sealed class AsrPipeline : IDisposable
             }
             else
             {
-                ReleaseModel();
+                // Gate busy means a native ProcessAsync (or reload) may still be in flight —
+                // releasing the factory now would use-after-free inside whisper.cpp. Leak it;
+                // the process is exiting and the OS reclaims everything.
+                _log("ASR shutdown: factory gate busy · 保留原生模型句柄直至进程退出");
             }
         }
         catch
         {
-            ReleaseModel();
+            // ignore — shutdown path
         }
 
         try { _jobGate.Dispose(); } catch { /* ignore */ }
@@ -695,6 +708,16 @@ internal sealed class AsrPipeline : IDisposable
             UseGpu = preferGpu,
             GpuDevice = gpuDevice,
         };
+        // Respect the Vulkan reclaim cooldown — a fresh instance inside the teardown window
+        // of the previous factory (or a just-killed llama-server) crashes the process.
+        var sinceRelease = DateTime.UtcNow - _lastNativeReleaseUtc;
+        if (sinceRelease < NativeReloadCooldown)
+        {
+            var wait = NativeReloadCooldown - sinceRelease;
+            _log($"Vulkan 冷却 · {(int)wait.TotalMilliseconds}ms 后重载识别模型");
+            Thread.Sleep(wait);
+        }
+
         // whisper.cpp crashes (SEH) when the model path contains non-ASCII characters
         // (CJK usernames / folders) — load via an ASCII-safe alias that points at the same file.
         var nativeModelPath = NativePathSafety.SafeExistingFile(modelPath, _log);
@@ -759,6 +782,7 @@ internal sealed class AsrPipeline : IDisposable
         _factory = null;
         _loadedModelPath = null;
         _factoryGpu = false;
+        _lastNativeReleaseUtc = DateTime.UtcNow;
     }
 
     /// <summary>

@@ -72,6 +72,8 @@ public partial class MainWindow : Window
         };
 
         RestoreWindowBounds();
+        SizeChanged += OnWindowSizeChanged;
+        StateChanged += (_, _) => _lastWinState = WindowState;
         LocationChanged += (_, _) =>
         {
             NudgeOpeningPopup();
@@ -280,10 +282,47 @@ public partial class MainWindow : Window
 
     private bool _fitWindowPending;
     private int _fitWindowGuard;
+    private WindowState _lastWinState = WindowState.Normal;
+    private bool _suppressUserResizeMark;
+
+    /// <summary>
+    /// 手动拖拽调整窗口尺寸（非全屏过渡、非「窗口适应视频」自动调整）→ 记住用户尺寸，
+    /// 之后打开新文件不再自动改窗口（<see cref="FitWindowToVideo"/> 直接跳过）。
+    /// </summary>
+    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_suppressUserResizeMark || _fitWindowGuard > 0 || _isFullscreen)
+            return;
+        if (WindowState != WindowState.Normal)
+        {
+            _lastWinState = WindowState;
+            return;
+        }
+        // 从最大化/全屏恢复的那一次尺寸变化不是用户调整
+        if (_lastWinState != WindowState.Normal)
+        {
+            _lastWinState = WindowState;
+            return;
+        }
+        if (!IsLoaded || _preview is not { VideoWidth: > 0 })
+            return;
+        if (!_settings.WindowUserSized)
+        {
+            _settings.WindowUserSized = true;
+            _settings.Save();
+        }
+    }
 
     /// <summary>「窗口适应视频」：按片源像素尺寸（DPI 感知）调整窗口，使视频区接近 1:1 显示并落入工作区。</summary>
     private void FitWindowToVideo(int videoW, int videoH)
     {
+        // 用户手动设定过窗口尺寸：保持用户尺寸播放（画面在窗口内保持比例），不再自动改窗口。
+        if (_settings.WindowUserSized)
+        {
+            _fitWindowPending = false;
+            return;
+        }
+
         if (!string.Equals(_settings.VideoFit, "window", StringComparison.OrdinalIgnoreCase))
         {
             _fitWindowPending = false;

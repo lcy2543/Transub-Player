@@ -17,6 +17,7 @@ internal sealed class PlaylistPrefetch
     private readonly Action<string> _log;
     private readonly Func<string, SceneProfile> _resolveScene;
     private readonly Func<CancellationToken, Task> _ensureTranslate;
+    private readonly Func<CancellationToken, Task> _demoteTranslateGpu;
     private readonly Func<bool> _translateWanted;
     private readonly Func<string?> _liveMediaPath;
     private readonly object _gate = new();
@@ -37,6 +38,7 @@ internal sealed class PlaylistPrefetch
         Action<string> log,
         Func<string, SceneProfile> resolveScene,
         Func<CancellationToken, Task> ensureTranslate,
+        Func<CancellationToken, Task> demoteTranslateGpu,
         Func<bool> translateWanted,
         Func<string?> liveMediaPath)
     {
@@ -46,6 +48,7 @@ internal sealed class PlaylistPrefetch
         _log = log;
         _resolveScene = resolveScene;
         _ensureTranslate = ensureTranslate;
+        _demoteTranslateGpu = demoteTranslateGpu;
         _translateWanted = translateWanted;
         _liveMediaPath = liveMediaPath;
     }
@@ -299,6 +302,22 @@ internal sealed class PlaylistPrefetch
 
         await _engine.EnsureReadyAsync(ct).ConfigureAwait(false);
         var packs = await _engine.EnsureAsrModelAsync(ct).ConfigureAwait(false);
+
+        // Whisper Vulkan factory reload/init must not race a live llama-server GPU instance
+        // — demote first (kills external/legacy servers too via adopted PID), then settle.
+        try
+        {
+            await _demoteTranslateGpu(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log($"列表预生成降级翻译模型失败：{ex.Message}");
+        }
+
         var scene = _resolveScene(mediaPath);
         var asr = SceneProfiles.PickAsr(_settings.AsrModel, packs, scene.Language);
         var outDir = PreviewPaths.OutDir(mediaPath);

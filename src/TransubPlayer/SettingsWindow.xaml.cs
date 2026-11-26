@@ -461,7 +461,13 @@ public partial class SettingsWindow : Window
         _settings.SeekStepFineSeconds = SeekFineBox.SelectedItem is int fine ? fine : 1;
         _settings.SeekStepLargeSeconds = SeekLargeBox.SelectedItem is int large ? large : 30;
         _settings.HwDec = HwDecBox.SelectedValue as string ?? "auto";
-        _settings.VideoFit = VideoFitBox.SelectedValue as string ?? "window";
+        var videoFit = VideoFitBox.SelectedValue as string ?? "window";
+        if (!string.Equals(videoFit, _settings.VideoFit, StringComparison.OrdinalIgnoreCase))
+        {
+            // 重选画面缩放 → 恢复「窗口适应视频」自动调整（清除手动尺寸锁定）
+            _settings.WindowUserSized = false;
+        }
+        _settings.VideoFit = videoFit;
         _settings.VideoEnhance = VideoEnhanceModes.ToSetting(
             VideoEnhanceModes.Parse(VideoEnhanceBox.SelectedValue as string));
 
